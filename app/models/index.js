@@ -1,0 +1,77 @@
+const dbConfig = require("../config/db.config.js");
+
+const Sequelize = require("sequelize");
+const sequelize = new Sequelize(dbConfig.DB, dbConfig.USER, dbConfig.PASSWORD, {
+  host: dbConfig.HOST,
+  port: dbConfig.PORT,
+  dialect: dbConfig.dialect,
+  dialectOptions: dbConfig.dialectOptions || {},
+  operatorsAliases: 0,
+
+  pool: {
+    max: dbConfig.pool.max,
+    min: dbConfig.pool.min,
+    acquire: dbConfig.pool.acquire,
+    idle: dbConfig.pool.idle
+  }
+});
+
+const db = {};
+
+db.Sequelize = Sequelize;
+db.sequelize = sequelize;
+
+db.users = require("./user.model.js")(sequelize, Sequelize);
+db.persons = require("./person.model.js")(sequelize, Sequelize);
+db.refreshTokens = require("./refreshToken.model.js")(sequelize, Sequelize);
+db.userStatus = require('./userStatus.model.js')(sequelize, Sequelize);
+db.taskFeature_has_group = require('./taskFeature_has_group.model.js')(sequelize, Sequelize);
+db.taskFeature_has_user = require('./taskFeature_has_user.model.js')(sequelize, Sequelize);
+db.taskFeature = require('./taskFeature.model.js')(sequelize, Sequelize);
+db.modulo = require('./modulo.model.js')(sequelize, Sequelize);
+db.moduleFeatureTaskStatus = require('./moduleFeatureTaskStatus.model.js')(sequelize, Sequelize);
+db.feature = require('./feature.model.js')(sequelize, Sequelize);
+db.task = require('./task.model.js')(sequelize, Sequelize);
+db.group = require('./group.model.js')(sequelize, Sequelize);
+db.groupStatus = require('./groupStatus.model.js')(sequelize, Sequelize);
+db.group_has_user = require('./group_has_user.model.js')(sequelize, Sequelize);
+db.apiLog = require('./apiLog.model.js')(sequelize, Sequelize);
+
+db.persons.hasOne(db.users, {
+  foreignKey: 'person_ID',
+  onDelete: 'CASCADE'
+});
+
+db.users.belongsTo(db.persons, {
+  foreignKey: 'person_ID',
+  onDelete: 'CASCADE',
+});
+
+db.users.belongsTo(db.userStatus, {
+  foreignKey: 'userStatus_ID'
+});
+
+db.userStatus.hasOne(db.users, {
+  foreignKey: 'userStatus_ID'
+});
+
+db.users.hasOne(db.refreshTokens, {
+  foreignKey: 'user_ID',
+  onDelete: 'CASCADE',
+});
+
+db.refreshTokens.belongsTo(db.users, {
+  foreignKey: 'user_ID',
+  onDelete: 'CASCADE'
+});
+
+db.group.belongsTo(db.groupStatus, {
+  foreignKey: 'groupStatus_ID',
+  as: 'GroupStatus'
+});
+
+db.groupStatus.hasMany(db.group, {
+  foreignKey: 'groupStatus_ID'
+});
+
+module.exports = db;

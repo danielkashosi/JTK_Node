@@ -1,0 +1,15 @@
+# package directories
+node_modules
+jspm_packages
+
+# Serverless directories
+.serverless
+# Environment variables (never commit real credentials)
+.env
+.env.uat
+.env.local
+.env.production
+
+# Logs
+*.log
+npm-debug.log*
