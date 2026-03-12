@@ -10,6 +10,9 @@ jspm_packages
 .env.local
 .env.production
 
+# Maintenance / one-off scripts (contain hardcoded credentials)
+scripts/
+
 # Logs
 *.log
 npm-debug.log*

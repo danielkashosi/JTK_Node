@@ -167,7 +167,7 @@ exports.signup = async (req, res) => {
       const transporter = nodemailer.createTransport({
         host: mailConfig.MAIL_SERVER,
         port: mailConfig.MAIL_PORT,
-        secure: true,
+        secure: false,
         auth: {
           user: mailConfig.MAIL_USER,
           pass: mailConfig.MAIL_PASSWORD,
@@ -300,7 +300,7 @@ exports.forgetPassword = async (req, res) => {
       const transporter = nodemailer.createTransport({
         host: mailConfig.MAIL_SERVER,
         port: mailConfig.MAIL_PORT,
-        secure: true,
+        secure: false,
         auth: {
           user: mailConfig.MAIL_USER,
           pass: mailConfig.MAIL_PASSWORD,
