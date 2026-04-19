@@ -103,9 +103,13 @@ require("./app/routes/visitReason.routes")(app);
 require("./app/routes/visit.routes")(app);
 
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}.`);
-});
+// Only bind a port when not running under a test runner
+if (process.env.NODE_ENV !== 'test') {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}.`);
+  });
+}
 
 module.exports.server = sls(app);
+module.exports.app = app;
