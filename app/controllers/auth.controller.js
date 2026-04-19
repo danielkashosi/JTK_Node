@@ -1,53 +1,40 @@
 const jwt = require("jsonwebtoken");
 const bcrypt = require('bcrypt');
-const nodemailer = require("nodemailer");
 const appConfig = require("../config/app.config.js");
 const jwtConfig = require("../config/jwt.config.js");
-const mailConfig = require("../config/mail.config.js");
+const transporter = require("../config/mailer.js");
 const db = require("../models");
 const User = db.users;
 const Person = db.persons;
 const UserStatus = db.userStatus;
 const RefreshToken = db.refreshTokens;
+const TaskFeature = db.taskFeature;
+const TaskFeature_has_user = db.taskFeature_has_user;
+const TaskFeature_has_group = db.taskFeature_has_group;
+const Group_has_user = db.group_has_user;
 const Op = db.Sequelize.Op;
 
-// In-memory account lockout tracker: { email -> { count, lockedUntil } }
-const loginAttempts = new Map();
-const MAX_LOGIN_ATTEMPTS = 5;
-const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+// Promisified jwt.verify to avoid async-in-callback unhandled rejections (H-7)
+function jwtVerifyAsync(token, secret) {
+  return new Promise((resolve, reject) => {
+    jwt.verify(token, secret, (err, decoded) => {
+      if (err) reject(err);
+      else resolve(decoded);
+    });
+  });
+}
 
-function checkLockout(email) {
-  const entry = loginAttempts.get(email);
-  if (!entry) return null;
-  if (entry.lockedUntil && entry.lockedUntil > Date.now()) {
-    const mins = Math.ceil((entry.lockedUntil - Date.now()) / 60000);
-    return `Account locked due to too many failed attempts. Try again in ${mins} minute(s).`;
-  }
+// Shared password strength validation (M-5)
+function validatePasswordStrength(password) {
+  if (!password || password.length < 8) return 'Password must be at least 8 characters.';
+  if (!/[A-Z]/.test(password)) return 'Password must contain at least one uppercase letter.';
+  if (!/[0-9]/.test(password)) return 'Password must contain at least one number.';
   return null;
-}
-
-function recordFailedAttempt(email) {
-  const entry = loginAttempts.get(email) || { count: 0, lockedUntil: null };
-  entry.count += 1;
-  if (entry.count >= MAX_LOGIN_ATTEMPTS) {
-    entry.lockedUntil = Date.now() + LOCKOUT_DURATION_MS;
-  }
-  loginAttempts.set(email, entry);
-}
-
-function clearAttempts(email) {
-  loginAttempts.delete(email);
 }
 
 // login
 exports.login = async (req, res) => {
   const { email, password } = req.body;
-
-  // Account lockout check
-  const lockoutMsg = checkLockout(email);
-  if (lockoutMsg) {
-    return res.status(429).send({ status: 'failure', data: lockoutMsg });
-  }
 
   try {
     const user = await User.findOne({
@@ -60,9 +47,7 @@ exports.login = async (req, res) => {
       include: Person
     })
     
-    if (user) {
-      if (bcrypt.compareSync(password, user.password)) {
-        clearAttempts(email);
+    if (user && await bcrypt.compare(password, user.password)) {
         const payload = { ID: user.ID }
         const accessToken = jwt.sign(
           payload,
@@ -99,18 +84,10 @@ exports.login = async (req, res) => {
             refreshToken
           }
         })
-      }
-      else {
-          recordFailedAttempt(email);
-          res.send({
-            status: 'failure',
-            data: 'Email or password is incorrect.'
-          });
-      }
     }
     else {
-      recordFailedAttempt(email);
-      res.send({
+      // Return 401 — do not differentiate between bad email and bad password (H-5)
+      return res.status(401).json({
         status: 'failure',
         data: 'Email or password is incorrect.'
       });
@@ -123,6 +100,7 @@ exports.login = async (req, res) => {
   }
 };
 
+
 exports.signup = async (req, res) => {
   const { userName, password, email, firstName, lastName } = req.body;
 
@@ -133,58 +111,56 @@ exports.signup = async (req, res) => {
     return;
   }
 
+  // Password strength check (M-5)
+  const pwError = validatePasswordStrength(password);
+  if (pwError) return res.status(400).json({ message: pwError });
+
   try {
-    const user = await User.findOne({ where: { userName }})
-    if (user) {
-      res.status(400).send({
-        'message': 'User already exist'
-      })
-    }
-    else {
-      const newPerson = await Person.create({
-        firstName,
-        lastName
-      })
-
-      const payload = { email }
-
-      const verifyToken = jwt.sign(
-        payload,
-        jwtConfig.VERIFY_TOKEN_PRIVATE_KEY,
-        { expiresIn: jwtConfig.VERIFY_TOKEN_EXPIRES_IN }
-      )
-
-      const pendingStatus = await UserStatus.findOne({ where: { name: "PENDING" }})
-      
-      await newPerson.createUser({
-        userName: userName,
-        password: bcrypt.hashSync(password, 10),
-        email: email,
-        userStatus_ID: pendingStatus.ID,
-        VerificationToken: verifyToken
-      })
-
-      const transporter = nodemailer.createTransport({
-        host: mailConfig.MAIL_SERVER,
-        port: mailConfig.MAIL_PORT,
-        secure: false,
-        auth: {
-          user: mailConfig.MAIL_USER,
-          pass: mailConfig.MAIL_PASSWORD,
-        }
+    // Check both userName and email uniqueness (M-2)
+    const existing = await User.findOne({
+      where: { [Op.or]: [{ userName }, { email }] }
+    });
+    if (existing) {
+      return res.status(400).send({
+        message: existing.userName === userName
+          ? 'Username is already taken.'
+          : 'Email address is already registered.'
       });
-
-      await transporter.sendMail({
-          from: mailConfig.MAIL_DEFAULT_SENDER,
-          to: email,
-          subject: "Please verify your email",
-          text: `${appConfig.BASE_URL}/verify/${verifyToken}`,
-      });
-
-      res.status(201).json({
-        'message': 'A confirmation email has been sent via email'
-      })
     }
+
+    const newPerson = await Person.create({
+      firstName,
+      lastName
+    })
+
+    const payload = { email }
+
+    const verifyToken = jwt.sign(
+      payload,
+      jwtConfig.VERIFY_TOKEN_PRIVATE_KEY,
+      { expiresIn: jwtConfig.VERIFY_TOKEN_EXPIRES_IN }
+    )
+
+    const pendingStatus = await UserStatus.findOne({ where: { name: "PENDING" }})
+    
+    await newPerson.createUser({
+      userName: userName,
+      password: await bcrypt.hash(password, 10),
+      email: email,
+      userStatus_ID: pendingStatus.ID,
+      VerificationToken: verifyToken
+    })
+
+    await transporter.sendMail({
+        from: appConfig.MAIL_DEFAULT_SENDER,
+        to: email,
+        subject: "Please verify your email",
+        text: `${appConfig.BASE_URL}/verify/${verifyToken}`,
+    });
+
+    res.status(201).json({
+      'message': 'A confirmation email has been sent via email'
+    })
   } catch(err) {
     res.status(500).send({
       message:
@@ -196,36 +172,24 @@ exports.signup = async (req, res) => {
 exports.verify = async (req, res) => {
   const token = req.params.token;
 
-  jwt.verify(token, jwtConfig.VERIFY_TOKEN_PRIVATE_KEY, async (err, tokenDetails) => {
-    if (err) {
-      res.status(400).send({
-        message: 'Invalid verify token'
-      })
+  try {
+    const tokenDetails = await jwtVerifyAsync(token, jwtConfig.VERIFY_TOKEN_PRIVATE_KEY);
+    const user = await User.findOne({ where: { email: tokenDetails.email } });
+    if (!user) {
+      return res.status(400).send({ message: 'Invalid verify token' });
     }
-    else {
-      const user = await User.findOne({ where: {email: tokenDetails.email}})
-      if (user) {
-        const activeStatus = await UserStatus.findOne({ where: { name: "ACTIVE" }})
-
-        await User.update({
-          userStatus_ID: activeStatus.ID,
-          VerificationToken: '',
-          Verified: new Date()
-        }, {
-          where: { ID: user.ID }
-        })
-
-        res.status(201).json({
-          'message': 'Email verified successfully'
-        })
-      }
-      else {
-        res.status(400).send({
-          message: 'Invalid verify token'
-        })
-      }
-    }
-  })
+    const activeStatus = await UserStatus.findOne({ where: { name: "ACTIVE" } });
+    await User.update({
+      userStatus_ID: activeStatus.ID,
+      VerificationToken: '',
+      Verified: new Date()
+    }, {
+      where: { ID: user.ID }
+    });
+    res.status(201).json({ message: 'Email verified successfully' });
+  } catch (err) {
+    res.status(400).send({ message: 'Invalid verify token' });
+  }
 }
 
 exports.logout = async (req, res) => {
@@ -239,34 +203,56 @@ exports.logout = async (req, res) => {
   }
 }
 
-exports.refreshToken = async (req, res) => {
-  const token = await RefreshToken.findOne({ where: { Token: req.body.refreshToken }});
+exports.getMyPermissions = async (req, res) => {
+  try {
+    const userId = req.user.ID;
 
-  if (token) {
-    jwt.verify(token.Token, jwtConfig.REFRESH_TOKEN_PRIVATE_KEY, (err, tokenDetails) => {
-      if (err) {
-        res.send({
-          message: 'Invalid refresh token'
-        })
-      }
-      else {
-        const payload = { ID: tokenDetails.ID }
-        const accessToken = jwt.sign(
-          payload,
-          jwtConfig.ACCESS_TOKEN_PRIVATE_KEY,
-          { expiresIn: jwtConfig.ACCESS_TOKEN_EXPIRES_IN }
-        )
+    // Collect IDs from direct user-level permissions
+    const directLinks = await TaskFeature_has_user.findAll({ where: { user_ID: userId } });
+    const directIds = directLinks.map(l => l.taskFeature_ID);
 
-        res.json({
-          accessToken
-        })
-      }
-    })
+    // Collect IDs from group-based permissions
+    const userGroups = await Group_has_user.findAll({ where: { user_ID: userId } });
+    let groupFeatureIds = [];
+    if (userGroups.length > 0) {
+      const groupIds = userGroups.map(g => g.group_ID);
+      const groupLinks = await TaskFeature_has_group.findAll({ where: { group_ID: groupIds } });
+      groupFeatureIds = groupLinks.map(l => l.taskFeature_ID);
+    }
+
+    const allIds = [...new Set([...directIds, ...groupFeatureIds])];
+
+    if (allIds.length === 0) {
+      return res.json({ permissions: [] });
+    }
+
+    const features = await TaskFeature.findAll({ where: { ID: allIds } });
+    const permissions = features.map(f => f.name);
+
+    res.json({ permissions });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Error fetching permissions.' });
   }
-  else {
-    res.send({
-      message: 'Invalid refresh token'
-    })
+};
+
+exports.refreshToken = async (req, res) => {
+  const token = await RefreshToken.findOne({ where: { Token: req.body.refreshToken } });
+
+  if (!token) {
+    return res.status(401).json({ message: 'Invalid refresh token' });
+  }
+
+  try {
+    const tokenDetails = await jwtVerifyAsync(token.Token, jwtConfig.REFRESH_TOKEN_PRIVATE_KEY);
+    const payload = { ID: tokenDetails.ID };
+    const accessToken = jwt.sign(
+      payload,
+      jwtConfig.ACCESS_TOKEN_PRIVATE_KEY,
+      { expiresIn: jwtConfig.ACCESS_TOKEN_EXPIRES_IN }
+    );
+    res.json({ accessToken });
+  } catch (err) {
+    return res.status(401).json({ message: 'Invalid refresh token' });
   }
 }
 
@@ -280,49 +266,35 @@ exports.forgetPassword = async (req, res) => {
     return;
   }
 
+  // Always return the same message to prevent user enumeration (H-6)
+  const GENERIC_MSG = { message: 'If an account with that email exists, a password reset link has been sent.' };
+
   try {
-    const user = await User.findOne({ where: { email }})
+    const user = await User.findOne({ where: { email } });
     if (user) {
-      const payload = { ID: user.ID }
+      const payload = { ID: user.ID };
       const resetToken = jwt.sign(
         payload,
         jwtConfig.RESET_TOKEN_PRIVATE_KEY,
         { expiresIn: jwtConfig.RESET_TOKEN_EXPIRES_IN }
-      )
+      );
       
       await User.update({
         ResetToken: resetToken,
         ResetTokenExpires: new Date(Date.now() + 60 * 60 * 1000) // 1 hour
       }, {
         where: { ID: user.ID }
-      })
-
-      const transporter = nodemailer.createTransport({
-        host: mailConfig.MAIL_SERVER,
-        port: mailConfig.MAIL_PORT,
-        secure: false,
-        auth: {
-          user: mailConfig.MAIL_USER,
-          pass: mailConfig.MAIL_PASSWORD,
-        }
       });
 
       await transporter.sendMail({
-          from: mailConfig.MAIL_DEFAULT_SENDER,
+          from: appConfig.MAIL_DEFAULT_SENDER,
           to: user.email,
           subject: "Password reset",
           text: `${appConfig.BASE_URL}/resetPassword/${resetToken}`,
       });
+    }
 
-      res.status(201).json({
-        'message': 'Password reset link sent to your email address'
-      })
-    }
-    else {
-      res.status(400).send({
-        'message': 'User with given email does not exist'
-      })
-    }
+    res.status(200).json(GENERIC_MSG);
   } catch(err) {
     res.status(500).send({
       message:
@@ -332,8 +304,8 @@ exports.forgetPassword = async (req, res) => {
 }
 
 exports.resetPassword = async (req, res) => {
-  const resetToken = req.body.token
-  const password = req.body.password
+  const resetToken = req.body.token;
+  const password = req.body.password;
   if (!resetToken || !password) {
     res.status(400).send({
       message: "Content can not be empty!"
@@ -341,35 +313,33 @@ exports.resetPassword = async (req, res) => {
     return;
   }
 
-  jwt.verify(resetToken, jwtConfig.RESET_TOKEN_PRIVATE_KEY, async (err, tokenDetails) => {
-    if (err) {
-      res.status(400).send({
-        message: 'Invalid reset token'
-      })
-    }
-    else {
-      const user = await User.findOne({ where: { ID: tokenDetails.ID, ResetToken: resetToken }})
-      if (user) {
-        if (!user.ResetTokenExpires || user.ResetTokenExpires < new Date()) {
-          return res.status(400).send({ message: 'Reset token has expired' });
-        }
-        await User.update({
-          password: bcrypt.hashSync(password, 10),
-          ResetToken: '',
-          PasswordReset: new Date()
-        }, {
-          where: { ID: user.ID }
-        })
+  // Password strength check (M-5)
+  const pwError = validatePasswordStrength(password);
+  if (pwError) return res.status(400).json({ message: pwError });
 
-        res.status(201).json({
-          'message': 'Password reset successfully'
-        })
-      }
-      else {
-        res.status(400).send({
-          message: 'Invalid reset token'
-        })
-      }
+  try {
+    const tokenDetails = await jwtVerifyAsync(resetToken, jwtConfig.RESET_TOKEN_PRIVATE_KEY);
+    const user = await User.findOne({ where: { ID: tokenDetails.ID, ResetToken: resetToken } });
+    if (!user) {
+      return res.status(400).send({ message: 'Invalid reset token' });
     }
-  })
+    if (!user.ResetTokenExpires || user.ResetTokenExpires < new Date()) {
+      return res.status(400).send({ message: 'Reset token has expired' });
+    }
+
+    await User.update({
+      password: await bcrypt.hash(password, 10),
+      ResetToken: '',
+      PasswordReset: new Date()
+    }, {
+      where: { ID: user.ID }
+    });
+
+    // Revoke all existing refresh tokens so stolen sessions are invalidated (H-8)
+    await RefreshToken.destroy({ where: { user_ID: user.ID } });
+
+    res.status(200).json({ message: 'Password reset successfully' });
+  } catch (err) {
+    res.status(400).send({ message: 'Invalid reset token' });
+  }
 }

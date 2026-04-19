@@ -8,21 +8,21 @@ module.exports = app => {
     // Static routes first (before /:id to avoid conflicts)
     router.get("/statuses", group.getGroupStatuses);
   
-    router.post("/", group.create);
-    router.get("/", group.list);
-    router.get("/:id", group.read);
-    router.put("/:id", group.update);
-    router.delete("/:id", group.delete);
+    router.post("/", authMiddleware.checkTaskFeature('CREATEGROUP'), group.create);
+    router.get("/", authMiddleware.checkTaskFeature('LISTGROUPS'), group.list);
+    router.get("/:id", authMiddleware.checkTaskFeature('READGROUP'), group.read);
+    router.put("/:id", authMiddleware.checkTaskFeature('UPDATEGROUP'), group.update);
+    router.delete("/:id", authMiddleware.checkTaskFeature('DELETEGROUP'), group.delete);
 
     // Member management
-    router.post("/:id/members", group.addUser);
-    router.get("/:id/members", group.getMembers);
-    router.delete("/:id/members/:userId", group.removeUser);
+    router.post("/:id/members", authMiddleware.checkTaskFeature('UPDATEGROUP'), group.addUser);
+    router.get("/:id/members", authMiddleware.checkTaskFeature('READGROUP'), group.getMembers);
+    router.delete("/:id/members/:userId", authMiddleware.checkTaskFeature('UPDATEGROUP'), group.removeUser);
 
     // Permission (taskFeature) management
-    router.get("/:id/permissions", group.getPermissions);
-    router.post("/:id/permissions", group.addPermission);
-    router.delete("/:id/permissions/:tfId", group.removePermission);
+    router.get("/:id/permissions", authMiddleware.checkTaskFeature('READGROUP'), group.getPermissions);
+    router.post("/:id/permissions", authMiddleware.checkTaskFeature('UPDATEGROUP'), group.addPermission);
+    router.delete("/:id/permissions/:tfId", authMiddleware.checkTaskFeature('UPDATEGROUP'), group.removePermission);
   
     app.use('/api/groups', authMiddleware.authenticateJWT, router);
   };
