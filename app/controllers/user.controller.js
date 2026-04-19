@@ -7,6 +7,14 @@ const TaskFeature_has_user = db.taskFeature_has_user;
 const Group_has_user = db.group_has_user;
 const Op = db.Sequelize.Op;
 
+// Shared password strength validation (M-5)
+function validatePasswordStrength(password) {
+  if (!password || password.length < 8) return 'Password must be at least 8 characters.';
+  if (!/[A-Z]/.test(password)) return 'Password must contain at least one uppercase letter.';
+  if (!/[0-9]/.test(password)) return 'Password must contain at least one number.';
+  return null;
+}
+
 // Create and Save a new User
 exports.create = async (req, res) => {
   // Validate request
@@ -17,6 +25,10 @@ exports.create = async (req, res) => {
     });
     return;
   }
+
+  // Password strength check (M-5)
+  const pwError = validatePasswordStrength(password);
+  if (pwError) return res.status(400).json({ message: pwError });
 
   try {
     // Save User in the database
@@ -30,7 +42,7 @@ exports.create = async (req, res) => {
 
     await newPerson.createUser({
       userName,
-      password: bcrypt.hashSync(password, 10),
+      password: await bcrypt.hash(password, 10),
       email,
       userStatus_ID: pendingStatus.ID,
     })
@@ -39,10 +51,8 @@ exports.create = async (req, res) => {
       'message': 'User was created successfully'
     })
   } catch(err) {
-    res.status(500).send({
-      message:
-        err.message || "Some error occurred while creating user"
-    });
+    console.error('Some error occurred while creating user:', err);
+    res.status(500).send({ message: "An error occurred. Please try again." });
   }
 };
 
@@ -54,7 +64,7 @@ exports.list = async (req, res) => {
   const sortBy = req.query.sortBy || 'ID';
   const sortOrder = (req.query.sortOrder || 'ASC').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
   const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 10;
+  const limit = Math.min(parseInt(req.query.limit) || 10, 100); // cap at 100 (M-4)
   const offset = (page - 1) * limit;
 
   var condition = {}
@@ -77,10 +87,8 @@ exports.list = async (req, res) => {
     })
     res.send({ total: count, page, limit, data: users })
   } catch (err) {
-    res.status(500).send({
-      message:
-        err.message || "Some error occurred while retrieving users."
-    });
+    console.error('Some error occurred while retrieving users:', err);
+    res.status(500).send({ message: "An error occurred. Please try again." });
   }
 };
 
@@ -90,7 +98,8 @@ exports.listStatuses = async (req, res) => {
     const statuses = await UserStatus.findAll();
     res.send(statuses);
   } catch(err) {
-    res.status(500).send({ message: err.message || "Error retrieving user statuses." });
+    console.error('Error retrieving user statuses:', err);
+    res.status(500).send({ message: "An error occurred. Please try again." });
   }
 };
 
@@ -129,7 +138,11 @@ exports.update = async (req, res) => {
     const userUpdate = {};
     if (userName) userUpdate['userName'] = userName;
     if (email) userUpdate['email'] = email;
-    if (password) userUpdate['password'] = bcrypt.hashSync(password, 10);
+    if (password) {
+      const pwError = validatePasswordStrength(password);
+      if (pwError) return res.status(400).json({ message: pwError });
+      userUpdate['password'] = await bcrypt.hash(password, 10);
+    }
 
     if (Object.keys(userUpdate).length) {
       await User.update(userUpdate, { where: { ID: id } });
@@ -180,19 +193,28 @@ exports.changePassword = async (req, res) => {
   const id = req.params.id;
   const { currentPassword, newPassword } = req.body;
 
+  // Ownership check — only allow a user to change their own password (M-1: IDOR fix)
+  if (req.user.ID !== parseInt(id, 10)) {
+    return res.status(403).send({ message: 'You can only change your own password.' });
+  }
+
   if (!currentPassword || !newPassword) {
     return res.status(400).send({ message: "currentPassword and newPassword are required." });
   }
+
+  // Password strength check (M-5)
+  const pwError = validatePasswordStrength(newPassword);
+  if (pwError) return res.status(400).json({ message: pwError });
 
   try {
     const user = await User.findByPk(id);
     if (!user) return res.status(404).send({ message: `Cannot find User with id=${id}.` });
 
-    if (!bcrypt.compareSync(currentPassword, user.password)) {
+    if (!await bcrypt.compare(currentPassword, user.password)) {
       return res.status(400).send({ message: "Current password is incorrect." });
     }
 
-    await User.update({ password: bcrypt.hashSync(newPassword, 10) }, { where: { ID: id } });
+    await User.update({ password: await bcrypt.hash(newPassword, 10) }, { where: { ID: id } });
     res.send({ message: "Password changed successfully." });
   } catch(err) {
     res.status(500).send({ message: "Error changing password for User with id=" + id });
@@ -202,44 +224,42 @@ exports.changePassword = async (req, res) => {
 // Delete a User with the specified id in the request
 exports.delete = async (req, res) => {
   const id = req.params.id;
-  
-  try {
-    const user = await User.findByPk(id)
-    if (user) {
-      const person_ID = user.person_ID
 
-      await TaskFeature_has_user.destroy({
-        where: {
-          user_ID: user.ID
-        }
-      })
-
-      await Group_has_user.destroy({
-        where: {
-          user_ID: user.ID
-        }
-      })
-
-      await User.destroy({
-        where: { ID: id }
-      })
-
-      await Person.destroy({
-        where: { ID: person_ID }
-      })
-
-      res.send({
-        message: "User was deleted successfully!"
-      });
-    }
-    else {
-      res.status(404).send({
-        message: `Cannot find User with id=${id}.`
-      });
-    }
-  } catch(err) {
-    res.status(500).send({
-      message: "Could not delete User with id=" + id
+  const user = await User.findByPk(id);
+  if (!user) {
+    return res.status(404).send({
+      message: `Cannot find User with id=${id}.`
     });
+  }
+
+  const person_ID = user.person_ID;
+  const t = await db.sequelize.transaction();
+  try {
+    await TaskFeature_has_user.destroy({
+      where: { user_ID: user.ID },
+      transaction: t
+    });
+
+    await Group_has_user.destroy({
+      where: { user_ID: user.ID },
+      transaction: t
+    });
+
+    await User.destroy({
+      where: { ID: id },
+      transaction: t
+    });
+
+    await Person.destroy({
+      where: { ID: person_ID },
+      transaction: t
+    });
+
+    await t.commit();
+    res.send({ message: "User was deleted successfully!" });
+  } catch (err) {
+    await t.rollback();
+    console.error('Delete user error:', err);
+    res.status(500).send({ message: "Error deleting user. Please try again." });
   }
 };

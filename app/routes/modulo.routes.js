@@ -5,19 +5,19 @@ module.exports = app => {
   
     var router = require("express").Router();
   
-    router.post("/", modulo.create);
-  
-    router.get("/", modulo.list);
-  
-    router.get("/:id", modulo.read);
-  
-    router.put("/:id", modulo.update);
-  
-    router.delete("/:id", modulo.delete);
+    router.post("/", authMiddleware.checkTaskFeature('CREATEMODULE'), modulo.create);
 
-    router.post("/:id/user", modulo.addUser);
+    router.get("/", authMiddleware.checkTaskFeature('LISTMODULES'), modulo.list);
 
-    router.post("/:id/group", modulo.addGroup);
+    router.get("/:id", authMiddleware.checkTaskFeature('READMODULE'), modulo.read);
+
+    router.put("/:id", authMiddleware.checkTaskFeature('UPDATEMODULE'), modulo.update);
+
+    router.delete("/:id", authMiddleware.checkTaskFeature('DELETEMODULE'), modulo.delete);
+
+    router.post("/:id/user", authMiddleware.checkTaskFeature('UPDATEMODULE'), modulo.addUser);
+
+    router.post("/:id/group", authMiddleware.checkTaskFeature('UPDATEMODULE'), modulo.addGroup);
   
     app.use('/api/modules', authMiddleware.authenticateJWT, router);
   };

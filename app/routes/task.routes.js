@@ -5,15 +5,15 @@ module.exports = app => {
   
     var router = require("express").Router();
   
-    router.post("/", task.create);
-  
-    router.get("/", task.list);
-  
-    router.get("/:id", task.read);
-  
-    router.put("/:id", task.update);
-  
-    router.delete("/:id", task.delete);
+    router.post("/", authMiddleware.checkTaskFeature('CREATETASK'), task.create);
+
+    router.get("/", authMiddleware.checkTaskFeature('LISTTASKS'), task.list);
+
+    router.get("/:id", authMiddleware.checkTaskFeature('READTASK'), task.read);
+
+    router.put("/:id", authMiddleware.checkTaskFeature('UPDATETASK'), task.update);
+
+    router.delete("/:id", authMiddleware.checkTaskFeature('DELETETASK'), task.delete);
   
     app.use('/api/tasks', authMiddleware.authenticateJWT, router);
   };
