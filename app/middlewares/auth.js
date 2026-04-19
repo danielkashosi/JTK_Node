@@ -26,10 +26,13 @@ exports.authenticateJWT = (req, res, next) => {
 
 exports.checkTaskFeature = (taskFeatureName) => {
   return async (req, res, next) => {
-    if (req.user) {
+    if (!req.user) {
+      return res.sendStatus(401);
+    }
+    try {
       const taskFeature = await TaskFeature.findOne({
         where: { name: taskFeatureName }
-      })
+      });
   
       if (taskFeature) {
         // Check direct user permission
@@ -62,10 +65,10 @@ exports.checkTaskFeature = (taskFeatureName) => {
       else {
         return res.sendStatus(403);
       }
+    } catch (err) {
+      console.error('checkTaskFeature error:', err);
+      return res.status(500).json({ message: 'Authorization check failed.' });
     }
-    else {
-      return res.sendStatus(401);
-    }
-  }
+  };
 }
 

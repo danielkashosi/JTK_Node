@@ -195,3 +195,167 @@ CREATE TABLE apiLog (
     createdTime DATETIME,
     updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================================
+-- MODULE 1: Hospital Visit Workflow Tables
+-- ============================================================
+
+-- Department (no dependencies)
+CREATE TABLE department (
+    ID INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    code VARCHAR(20) NOT NULL UNIQUE,
+    description TEXT,
+    isActive TINYINT(1) NOT NULL DEFAULT 1,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Department staff assignment (depends on department, user)
+CREATE TABLE department_has_user (
+    ID INT AUTO_INCREMENT PRIMARY KEY,
+    department_ID INT NOT NULL,
+    user_ID INT NOT NULL,
+    isPrimary TINYINT(1) NOT NULL DEFAULT 0,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_dept_user (department_ID, user_ID),
+    FOREIGN KEY (department_ID) REFERENCES department(ID) ON DELETE CASCADE,
+    FOREIGN KEY (user_ID) REFERENCES user(ID) ON DELETE CASCADE,
+    INDEX idx_dept_user_dept (department_ID),
+    INDEX idx_dept_user_user (user_ID)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Patient (separate from system User — patients are not staff)
+CREATE TABLE patient (
+    ID INT AUTO_INCREMENT PRIMARY KEY,
+    firstName VARCHAR(255) NOT NULL,
+    lastName VARCHAR(255) NOT NULL,
+    DOB DATE,
+    gender VARCHAR(10),
+    nationalID VARCHAR(100) UNIQUE,
+    phone VARCHAR(50),
+    address TEXT,
+    bloodType VARCHAR(10),
+    allergiesNotes TEXT,
+    emergencyContactName VARCHAR(255),
+    emergencyContactPhone VARCHAR(50),
+    createdBy_ID INT,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (createdBy_ID) REFERENCES user(ID) ON DELETE SET NULL,
+    INDEX idx_patient_lastName (lastName),
+    INDEX idx_patient_nationalID (nationalID)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Visit reason catalog (no dependencies)
+CREATE TABLE visitReason (
+    ID INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    isActive TINYINT(1) NOT NULL DEFAULT 1,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Visit (core entity)
+-- currentStatus values: SCHEDULED | CHECKED_IN | WAITING_TRIAGE | TRIAGE_IN_PROGRESS
+--   | WAITING_DOCTOR | WITH_DOCTOR | WAITING_LAB | LAB_IN_PROGRESS | LAB_COMPLETED
+--   | PENDING_CHECKOUT | CHECKED_OUT | ABANDONED | CANCELLED
+CREATE TABLE visit (
+    ID INT AUTO_INCREMENT PRIMARY KEY,
+    patient_ID INT NOT NULL,
+    currentStatus VARCHAR(50) NOT NULL DEFAULT 'CHECKED_IN',
+    currentDepartment_ID INT,
+    currentAssignedUser_ID INT,
+    reasonText VARCHAR(500),
+    visitReason_ID INT,
+    scheduledAt DATETIME,
+    checkedInAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    checkedOutAt DATETIME,
+    createdBy_ID INT,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (patient_ID) REFERENCES patient(ID) ON DELETE CASCADE,
+    FOREIGN KEY (currentDepartment_ID) REFERENCES department(ID) ON DELETE SET NULL,
+    FOREIGN KEY (currentAssignedUser_ID) REFERENCES user(ID) ON DELETE SET NULL,
+    FOREIGN KEY (visitReason_ID) REFERENCES visitReason(ID) ON DELETE SET NULL,
+    FOREIGN KEY (createdBy_ID) REFERENCES user(ID) ON DELETE SET NULL,
+    INDEX idx_visit_patient (patient_ID),
+    INDEX idx_visit_status (currentStatus),
+    INDEX idx_visit_dept (currentDepartment_ID)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- VisitEvent (full timeline / audit log for each visit)
+CREATE TABLE visitEvent (
+    ID INT AUTO_INCREMENT PRIMARY KEY,
+    visit_ID INT NOT NULL,
+    fromStatus VARCHAR(50),
+    toStatus VARCHAR(50) NOT NULL,
+    fromDepartment_ID INT,
+    toDepartment_ID INT,
+    toAssignedUser_ID INT,
+    note TEXT,
+    performedBy_ID INT,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (visit_ID) REFERENCES visit(ID) ON DELETE CASCADE,
+    FOREIGN KEY (fromDepartment_ID) REFERENCES department(ID) ON DELETE SET NULL,
+    FOREIGN KEY (toDepartment_ID) REFERENCES department(ID) ON DELETE SET NULL,
+    FOREIGN KEY (toAssignedUser_ID) REFERENCES user(ID) ON DELETE SET NULL,
+    FOREIGN KEY (performedBy_ID) REFERENCES user(ID) ON DELETE SET NULL,
+    INDEX idx_visitEvent_visit (visit_ID)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- LabOrder (multiple per visit, concurrent or sequential)
+-- status values: ORDERED | IN_PROGRESS | COMPLETED | CANCELLED
+CREATE TABLE labOrder (
+    ID INT AUTO_INCREMENT PRIMARY KEY,
+    visit_ID INT NOT NULL,
+    testName VARCHAR(255) NOT NULL,
+    orderedBy_ID INT,
+    assignedDepartment_ID INT,
+    assignedUser_ID INT,
+    status VARCHAR(20) NOT NULL DEFAULT 'ORDERED',
+    resultText TEXT,
+    fileUrl VARCHAR(1000),
+    notes TEXT,
+    orderedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completedAt DATETIME,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (visit_ID) REFERENCES visit(ID) ON DELETE CASCADE,
+    FOREIGN KEY (orderedBy_ID) REFERENCES user(ID) ON DELETE SET NULL,
+    FOREIGN KEY (assignedDepartment_ID) REFERENCES department(ID) ON DELETE SET NULL,
+    FOREIGN KEY (assignedUser_ID) REFERENCES user(ID) ON DELETE SET NULL,
+    INDEX idx_labOrder_visit (visit_ID),
+    INDEX idx_labOrder_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Invoice (one per visit)
+-- status values: PENDING | PAID | WAIVED
+CREATE TABLE invoice (
+    ID INT AUTO_INCREMENT PRIMARY KEY,
+    visit_ID INT NOT NULL UNIQUE,
+    totalAmount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    notes TEXT,
+    createdBy_ID INT,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (visit_ID) REFERENCES visit(ID) ON DELETE CASCADE,
+    FOREIGN KEY (createdBy_ID) REFERENCES user(ID) ON DELETE SET NULL,
+    INDEX idx_invoice_visit (visit_ID)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- InvoicePayment (one per payment transaction — cash only for now, extensible)
+CREATE TABLE invoicePayment (
+    ID INT AUTO_INCREMENT PRIMARY KEY,
+    invoice_ID INT NOT NULL,
+    method VARCHAR(50) NOT NULL DEFAULT 'CASH',
+    amount DECIMAL(10,2) NOT NULL,
+    receivedBy_ID INT,
+    paidAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (invoice_ID) REFERENCES invoice(ID) ON DELETE CASCADE,
+    FOREIGN KEY (receivedBy_ID) REFERENCES user(ID) ON DELETE SET NULL,
+    INDEX idx_invoicePayment_invoice (invoice_ID)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
