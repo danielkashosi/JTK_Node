@@ -39,7 +39,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await cleanupDb();
-  await db.sequelize.close();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -302,10 +301,11 @@ describe('PATCH /api/users/:id/status', () => {
   });
 
   it('changes user status and returns 200', async () => {
+    // User is created with PENDING status by the controller; change to ACTIVE (different value)
     const res = await request(app)
       .patch(`/api/users/${createdUserId}/status`)
       .set(getAuthHeader(adminToken))
-      .send({ userStatus_ID: pendingStatusId });
+      .send({ userStatus_ID: activeStatusId });
 
     expect(res.status).toBe(200);
     expect(res.body.message).toMatch(/updated successfully/i);

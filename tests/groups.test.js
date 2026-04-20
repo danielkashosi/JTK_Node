@@ -60,7 +60,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await cleanupDb();
-  await db.sequelize.close();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

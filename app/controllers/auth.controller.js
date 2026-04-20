@@ -36,6 +36,10 @@ function validatePasswordStrength(password) {
 exports.login = async (req, res) => {
   const { email, password } = req.body;
 
+  if (!email || !password) {
+    return res.status(401).json({ status: 'failure', data: 'Email or password is incorrect.' });
+  }
+
   try {
     const user = await User.findOne({
       where: { 
